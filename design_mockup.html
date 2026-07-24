@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WinPersonalize v3.0 — UI 设计方案 (现代简约卡片风)</title>
+<style>
+  :root {
+    --bg: #F7F8FA;
+    --surface: #FFFFFF;
+    --border: #E8EAED;
+    --text-1: #1F2430;
+    --text-2: #6B7280;
+    --text-3: #9CA3AF;
+    --primary: #2563EB;
+    --primary-hover: #1D4ED8;
+    --green: #16A34A;
+    --green-bg: #E7F6EC;
+    --amber: #D97706;
+    --amber-bg: #FDF1E0;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.06);
+    --shadow-md: 0 4px 14px rgba(31,36,48,0.10);
+    --radius: 12px;
+    --font: "Microsoft YaHei", "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--font);
+    background: #E3E5E9;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 48px 24px;
+    color: var(--text-1);
+  }
+
+  /* ===== 窗口外壳 ===== */
+  .window {
+    width: 560px;
+    background: var(--bg);
+    border-radius: 10px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.22);
+    overflow: hidden;
+  }
+  .titlebar {
+    height: 38px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    gap: 8px;
+  }
+  .titlebar .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .titlebar .r { background: #FF5F57; }
+  .titlebar .y { background: #FEBC2E; }
+  .titlebar .g { background: #28C840; }
+  .titlebar .name {
+    margin-left: 10px; font-size: 12px; color: var(--text-3);
+    font-weight: 500;
+  }
+  .content { padding: 28px; }
+
+  /* ===== 页头 ===== */
+  .header { margin-bottom: 8px; }
+  .header h1 {
+    font-size: 24px; font-weight: 700; color: var(--text-1);
+    letter-spacing: -0.4px; line-height: 32px;
+  }
+  .accent-bar {
+    width: 32px; height: 3px; background: var(--primary);
+    border-radius: 2px; margin: 8px 0 10px;
+  }
+  .header .sub { font-size: 13px; color: var(--text-2); line-height: 18px; }
+  .divider { height: 1px; background: var(--border); margin: 18px 0 20px; }
+
+  /* ===== 功能卡片 ===== */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    padding: 16px 18px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 14px;
+    position: relative;
+    overflow: hidden;
+    transition: box-shadow .18s ease, transform .18s ease;
+  }
+  .card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+  .card .bar {
+    position: absolute; left: 0; top: 10px; bottom: 10px;
+    width: 3px; border-radius: 0 3px 3px 0;
+  }
+  .card.green .bar { background: var(--green); }
+  .card.amber .bar { background: var(--amber); }
+
+  /* 图标 */
+  .icon {
+    width: 44px; height: 44px; border-radius: 10px;
+    flex-shrink: 0; display: flex; flex-direction: column;
+    justify-content: center; align-items: center; gap: 4px;
+  }
+  .card.green .icon { background: var(--green); }
+  .card.amber .icon { background: var(--amber); }
+  .icon .line {
+    width: 22px; height: 2px; background: #fff; border-radius: 2px;
+    position: relative;
+  }
+  .icon .knob {
+    position: absolute; width: 6px; height: 6px; border-radius: 50%;
+    background: #fff; top: -2px;
+  }
+  .icon .l1 .knob { left: 6px; }
+  .icon .l2 .knob { left: 12px; }
+  .icon .l3 .knob { left: 4px; }
+
+  /* 文字区 */
+  .info { flex: 1; min-width: 0; padding-left: 4px; }
+  .info .name { font-size: 15px; font-weight: 600; color: var(--text-1); line-height: 22px; }
+  .info .desc {
+    font-size: 12px; color: var(--text-2); line-height: 18px;
+    margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    margin-top: 8px; height: 22px; padding: 0 10px;
+    border-radius: 11px; font-size: 11px; font-weight: 500;
+  }
+  .badge.on { background: var(--green-bg); color: var(--green); }
+  .badge.off { background: #F3F4F6; color: var(--text-3); }
+  .badge .dot { font-size: 9px; line-height: 1; }
+
+  /* 按钮 */
+  .btn {
+    flex-shrink: 0; width: 90px; height: 32px; border-radius: 5px;
+    font-size: 13px; font-weight: 500; cursor: pointer;
+    border: 1px solid transparent; display: flex;
+    align-items: center; justify-content: center;
+    transition: background .15s ease;
+    font-family: var(--font);
+  }
+  .btn.primary { background: var(--primary); color: #fff; }
+  .btn.primary:hover { background: var(--primary-hover); }
+  .btn.secondary { background: var(--surface); color: var(--text-1); border-color: #D4D7DD; }
+  .btn.secondary:hover { background: #F0F2F5; }
+
+  /* 页脚 */
+  .footer {
+    font-size: 11px; color: var(--text-3); line-height: 16px;
+    margin-top: 18px;
+  }
+
+  /* 标注 */
+  .note {
+    margin-top: 24px; padding: 14px 16px; background: #EEF2FF;
+    border: 1px solid #DBE3FF; border-radius: 8px;
+    font-size: 12px; color: #4338CA; line-height: 18px;
+  }
+  .note b { color: #3730A3; }
+</style>
+</head>
+<body>
+  <div class="window">
+    <div class="titlebar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="name">Windows 个性化</span>
+    </div>
+    <div class="content">
+      <!-- 页头 -->
+      <div class="header">
+        <h1>Windows 个性化</h1>
+        <div class="accent-bar"></div>
+        <div class="sub">Windows 11 (Build 22631)</div>
+      </div>
+      <div class="divider"></div>
+
+      <!-- 卡片 1：计算机管理（已启用）-->
+      <div class="card green">
+        <div class="bar"></div>
+        <div class="icon">
+          <div class="line l1"><span class="knob"></span></div>
+          <div class="line l2"><span class="knob"></span></div>
+          <div class="line l3"><span class="knob"></span></div>
+        </div>
+        <div class="info">
+          <div class="name">计算机管理</div>
+          <div class="desc">打开计算机管理控制台（compmgmt.msc）</div>
+          <div class="badge on"><span class="dot">●</span> 已启用</div>
+        </div>
+        <div class="btn secondary">停用</div>
+      </div>
+
+      <!-- 卡片 2：设备管理器（已启用）-->
+      <div class="card green">
+        <div class="bar"></div>
+        <div class="icon">
+          <div class="line l1"><span class="knob"></span></div>
+          <div class="line l2"><span class="knob"></span></div>
+          <div class="line l3"><span class="knob"></span></div>
+        </div>
+        <div class="info">
+          <div class="name">设备管理器</div>
+          <div class="desc">打开设备管理器（devmgmt.msc）</div>
+          <div class="badge on"><span class="dot">●</span> 已启用</div>
+        </div>
+        <div class="btn secondary">停用</div>
+      </div>
+
+      <!-- 卡片 3：显示/隐藏 系统文件（未启用）-->
+      <div class="card amber">
+        <div class="bar"></div>
+        <div class="icon">
+          <div class="line l1"><span class="knob"></span></div>
+          <div class="line l2"><span class="knob"></span></div>
+          <div class="line l3"><span class="knob"></span></div>
+        </div>
+        <div class="info">
+          <div class="name">显示/隐藏 系统文件</div>
+          <div class="desc">在"此电脑"右键切换隐藏文件与扩展名显示</div>
+          <div class="badge off"><span class="dot">○</span> 未启用</div>
+        </div>
+        <div class="btn primary">启用</div>
+      </div>
+
+      <!-- 页脚 -->
+      <div class="footer">
+        在"此电脑"上右键即可看到效果（Windows 11 需"显示更多选项"）。本工具需管理员权限写入。
+      </div>
+
+      <div class="note">
+        <b>设计说明：</b>现代简约卡片风 — 白色卡片 + 微阴影 + 左侧 3px 类型彩条（绿=命令类 / 琥珀=切换类），
+        状态用绿/灰药丸徽章区分，按钮主操作为蓝底、次操作为描边。全部色彩与坐标见 DESIGN_SYSTEM.md，
+        可直接落地到 C++ GDI 绘制代码。
+      </div>
+    </div>
+  </div>
+</body>
+</html>
