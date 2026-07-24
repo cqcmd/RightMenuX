@@ -8,8 +8,8 @@
 IDI_APP_ICON ICON "app.ico"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 1,0,3,260724
-PRODUCTVERSION 1,0,3,260724
+FILEVERSION 1,0,4,260724
+PRODUCTVERSION 1,0,4,260724
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS VOS_NT_WINDOWS32
@@ -22,12 +22,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "重庆持玛多网络科技有限公司"
             VALUE "FileDescription", "RightMenuX 右键菜单增强工具"
-            VALUE "FileVersion", "1.0.3.20260724"
+            VALUE "FileVersion", "1.0.4.20260724"
             VALUE "InternalName", "RightMenuX"
             VALUE "LegalCopyright", "持玛多网络 / Z.W."
             VALUE "OriginalFilename", "RightMenuX.exe"
             VALUE "ProductName", "RightMenuX"
-            VALUE "ProductVersion", "1.0.3.20260724"
+            VALUE "ProductVersion", "1.0.4.20260724"
         END
     END
     BLOCK "VarFileInfo"
@@ -58,5 +58,5 @@ END
 // ------------------------------------------------------------
 STRINGTABLE
 BEGIN
-    IDS_VERSION "1.0.3.20260724"
+    IDS_VERSION "1.0.4.20260724"
 END

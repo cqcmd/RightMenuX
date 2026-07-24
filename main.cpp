@@ -46,6 +46,21 @@
 #define SHADOW_PAD   1       // 仅用于 1px 边框留白（不再绘制灰色外阴影）
 #define WIN_RADIUS   12      // 窗口/卡片圆角半径
 
+// ---- Per-Monitor V2 DPI 自适应（核心） ----
+// 所有布局常量保持 96-DPI 基准值不变（几何关系一目了然），
+// 实际像素在绘制/命中检测时统一经 Scale() 换算。g_dpi 在 CreateWindow
+// 后按窗口实际监视器 DPI 更新，并在 WM_DPICHANGED 时随之刷新。
+static UINT g_dpi = 96;
+static inline int Scale(int v) { return MulDiv(v, (int)g_dpi, 96); }
+
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+
+// 前向声明（定义见窗口过程之前的辅助区）：供 NoticeProc 等提前调用
+static UINT GetWindowDpi(HWND hWnd);
+static void ApplyRoundedRegion(HWND hWnd, int w, int h);
+
 // ---- 设计 Token v3.4（在 v3.3 基础上调谐，整体更通透协调） ----
 static const COLORREF C_BG              = RGB(244, 245, 248); // #F4F5F8 内容背景
 static const COLORREF C_TB_BG           = RGB(248, 249, 251); // #F8F9FB 标题栏（略亮于内容，分层）
@@ -97,7 +112,9 @@ static RECT  g_closeBtnRect;
 static BOOL  g_minHover = FALSE;
 static BOOL  g_closeHover = FALSE;
 static int   g_count = 0;
-static int   g_totalH = 0;
+static int   g_totalH = 0;       // 缩放后内容区总高（96-DPI 基准求和后 Scale）
+static int   g_clientW = 0;      // 缩放后窗口客户区宽
+static int   g_clientH = 0;      // 缩放后窗口客户区高
 static WCHAR g_osString[128] = {0};
 static HICON g_hAppIcon = NULL; // 标题栏真实应用图标（LoadIcon）
 static HINSTANCE g_hInst = NULL; // 全局实例句柄（供自绘弹窗注册类使用）
@@ -171,20 +188,23 @@ static HFONT MakeFont(int hpx, int weight) {
 
 // 卡片：白色圆角 + 多层实色向下投影 + 左侧 3px 彩条 + hover 着主色边框
 static void DrawCard(HDC hdc, RECT* r, BOOL hovered, COLORREF accent) {
-    int rad = WIN_RADIUS;
+    int rad = Scale(WIN_RADIUS);
     // 多层实色阴影：远层(浅,偏移大) -> 近层(深,偏移小)，向下投影。
     // GDI 无半透明，用多层实色模拟柔和层次，避免单层浅灰像"脏污"。
-    RECT sh2 = {r->left + 1, r->top + 5, r->right + 1, r->bottom + 5};
+    RECT sh2 = {r->left + Scale(1), r->top + Scale(5),
+                r->right + Scale(1), r->bottom + Scale(5)};
     DrawRoundedRect(hdc, &sh2, rad, C_SHADOW_2, C_SHADOW_2);
-    RECT sh1 = {r->left,     r->top + 3, r->right,     r->bottom + 3};
+    RECT sh1 = {r->left,           r->top + Scale(3),
+                r->right,           r->bottom + Scale(3)};
     DrawRoundedRect(hdc, &sh1, rad, C_SHADOW, C_SHADOW);
     // 卡片本体
     COLORREF brd = hovered ? C_PRIMARY : C_BORDER;
     int bw = hovered ? 2 : 1;
     DrawRoundedRect(hdc, r, rad, C_CARD_BG, brd, bw);
     // 左侧 3px 圆角类型彩条（绿=RunCommand / 琥珀=ShellExtension）
-    RECT ar = {r->left, r->top + 14, r->left + 3, r->bottom - 14};
-    DrawRoundedRect(hdc, &ar, 2, accent, accent);
+    RECT ar = {r->left, r->top + Scale(14),
+               r->left + Scale(3), r->bottom - Scale(14)};
+    DrawRoundedRect(hdc, &ar, Scale(2), accent, accent);
 }
 
 // 按钮：圆角 8px；主操作（启用）蓝底白字，次操作（停用）白底描边
@@ -200,10 +220,10 @@ static void DrawButton(HDC hdc, RECT* r, const WCHAR* text,
         border = hovered ? C_BTN_BORDER_H : C_BTN_BORDER;
         textc  = C_TEXT;
     }
-    DrawRoundedRect(hdc, r, 8, fill, border);
+    DrawRoundedRect(hdc, r, Scale(8), fill, border);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, textc);
-    HFONT f = MakeFont(13, FW_MEDIUM);
+    HFONT f = MakeFont(Scale(13), FW_MEDIUM);
     HFONT of = (HFONT)SelectObject(hdc, f);
     DrawTextW(hdc, text, -1, r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     SelectObject(hdc, of);
@@ -211,72 +231,75 @@ static void DrawButton(HDC hdc, RECT* r, const WCHAR* text,
 }
 
 // 功能图标：彩色圆角瓦片（绿/琥珀）+ 白色线稿语义图形
+// 所有线稿偏移与半径均经 Scale()，使图标在 HiDPI 下与放大的瓦片保持比例。
 static void DrawFeatureIcon(HDC hdc, RECT* r, const WCHAR* fid, COLORREF accent) {
     (void)accent; // 瓦片底色由调用处填充，这里只画线稿
     int cx = (r->left + r->right) / 2, cy = (r->top + r->bottom) / 2;
+    int pw = Scale(2);   // 线稿统一线宽
 
     if (wcscmp(fid, L"ComputerManagement") == 0) {
         // 显示器
-        RECT s = {cx - 13, cy - 10, cx + 13, cy + 2};
-        StrokeRoundedRect(hdc, &s, 3, RGB(255, 255, 255), 2);
-        HPEN wp = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+        RECT s = {cx - Scale(13), cy - Scale(10), cx + Scale(13), cy + Scale(2)};
+        StrokeRoundedRect(hdc, &s, Scale(3), RGB(255, 255, 255), pw);
+        HPEN wp = CreatePen(PS_SOLID, pw, RGB(255, 255, 255));
         HPEN owp = (HPEN)SelectObject(hdc, wp);
-        MoveToEx(hdc, cx, cy + 2, NULL);  LineTo(hdc, cx, cy + 7);
-        MoveToEx(hdc, cx - 7, cy + 7, NULL); LineTo(hdc, cx + 7, cy + 7);
+        MoveToEx(hdc, cx, cy + Scale(2), NULL);  LineTo(hdc, cx, cy + Scale(7));
+        MoveToEx(hdc, cx - Scale(7), cy + Scale(7), NULL); LineTo(hdc, cx + Scale(7), cy + Scale(7));
         SelectObject(hdc, owp);
         DeleteObject(wp);
     } else if (wcscmp(fid, L"DeviceManager") == 0) {
         // 芯片
-        RECT sq = {cx - 9, cy - 9, cx + 9, cy + 9};
-        StrokeRoundedRect(hdc, &sq, 2, RGB(255, 255, 255), 2);
-        RECT dot = {cx - 3, cy - 3, cx + 3, cy + 3};
+        RECT sq = {cx - Scale(9), cy - Scale(9), cx + Scale(9), cy + Scale(9)};
+        StrokeRoundedRect(hdc, &sq, Scale(2), RGB(255, 255, 255), pw);
+        RECT dot = {cx - Scale(3), cy - Scale(3), cx + Scale(3), cy + Scale(3)};
         HBRUSH wb = CreateSolidBrush(RGB(255, 255, 255));
         HBRUSH owb = (HBRUSH)SelectObject(hdc, wb);
         Rectangle(hdc, dot.left, dot.top, dot.right, dot.bottom);
         SelectObject(hdc, owb);
         DeleteObject(wb);
-        HPEN wp = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+        HPEN wp = CreatePen(PS_SOLID, pw, RGB(255, 255, 255));
         HPEN owp = (HPEN)SelectObject(hdc, wp);
         for (int o = -6; o <= 6; o += 6) {
-            MoveToEx(hdc, cx + o, cy - 9, NULL);  LineTo(hdc, cx + o, cy - 12);
-            MoveToEx(hdc, cx + o, cy + 9, NULL);  LineTo(hdc, cx + o, cy + 12);
-            MoveToEx(hdc, cx - 9, cy + o, NULL);  LineTo(hdc, cx - 12, cy + o);
-            MoveToEx(hdc, cx + 9, cy + o, NULL);  LineTo(hdc, cx + 12, cy + o);
+            int so = Scale(o);
+            MoveToEx(hdc, cx + so, cy - Scale(9), NULL);  LineTo(hdc, cx + so, cy - Scale(12));
+            MoveToEx(hdc, cx + so, cy + Scale(9), NULL);  LineTo(hdc, cx + so, cy + Scale(12));
+            MoveToEx(hdc, cx - Scale(9), cy + so, NULL);  LineTo(hdc, cx - Scale(12), cy + so);
+            MoveToEx(hdc, cx + Scale(9), cy + so, NULL);  LineTo(hdc, cx + Scale(12), cy + so);
         }
         SelectObject(hdc, owp);
         DeleteObject(wp);
     } else if (wcscmp(fid, L"CmdHere") == 0) {
         // 命令提示符：终端窗口 + ">" 提示符
-        RECT term = {cx - 14, cy - 11, cx + 14, cy + 11};
-        StrokeRoundedRect(hdc, &term, 3, RGB(255, 255, 255), 2);
+        RECT term = {cx - Scale(14), cy - Scale(11), cx + Scale(14), cy + Scale(11)};
+        StrokeRoundedRect(hdc, &term, Scale(3), RGB(255, 255, 255), pw);
         // ">" 提示符
-        HPEN wp = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+        HPEN wp = CreatePen(PS_SOLID, pw, RGB(255, 255, 255));
         HPEN owp = (HPEN)SelectObject(hdc, wp);
-        MoveToEx(hdc, cx - 9, cy - 3, NULL); LineTo(hdc, cx - 4, cy + 1);
-        MoveToEx(hdc, cx - 4, cy + 1, NULL);  LineTo(hdc, cx - 9, cy + 5);
+        MoveToEx(hdc, cx - Scale(9), cy - Scale(3), NULL); LineTo(hdc, cx - Scale(4), cy + Scale(1));
+        MoveToEx(hdc, cx - Scale(4), cy + Scale(1), NULL);  LineTo(hdc, cx - Scale(9), cy + Scale(5));
         SelectObject(hdc, owp);
         DeleteObject(wp);
         // 光标短横
-        HPEN cp = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+        HPEN cp = CreatePen(PS_SOLID, pw, RGB(255, 255, 255));
         HPEN ocp = (HPEN)SelectObject(hdc, cp);
-        MoveToEx(hdc, cx - 1, cy + 3, NULL); LineTo(hdc, cx + 6, cy + 3);
+        MoveToEx(hdc, cx - Scale(1), cy + Scale(3), NULL); LineTo(hdc, cx + Scale(6), cy + Scale(3));
         SelectObject(hdc, ocp);
         DeleteObject(cp);
     } else {
         // 文件夹 + 眼睛（显示/隐藏）
-        RECT fb = {cx - 14, cy - 5, cx + 14, cy + 11};
-        StrokeRoundedRect(hdc, &fb, 3, RGB(255, 255, 255), 2);
-        RECT ft = {cx - 14, cy - 10, cx - 2, cy - 5};
+        RECT fb = {cx - Scale(14), cy - Scale(5), cx + Scale(14), cy + Scale(11)};
+        StrokeRoundedRect(hdc, &fb, Scale(3), RGB(255, 255, 255), pw);
+        RECT ft = {cx - Scale(14), cy - Scale(10), cx - Scale(2), cy - Scale(5)};
         HBRUSH wb = CreateSolidBrush(RGB(255, 255, 255));
         HBRUSH owb = (HBRUSH)SelectObject(hdc, wb);
-        RoundRect(hdc, ft.left, ft.top, ft.right, ft.bottom, 2 * 2, 2 * 2);
+        RoundRect(hdc, ft.left, ft.top, ft.right, ft.bottom, 2 * Scale(2), 2 * Scale(2));
         SelectObject(hdc, owb);
         DeleteObject(wb);
-        int ex = cx, ey = cy + 3, er = 4;
-        StrokeEllipse(hdc, ex, ey, er, RGB(255, 255, 255), 2);
+        int ex = cx, ey = cy + Scale(3), er = Scale(4);
+        StrokeEllipse(hdc, ex, ey, er, RGB(255, 255, 255), pw);
         HBRUSH pb = CreateSolidBrush(RGB(255, 255, 255));
         HBRUSH opb = (HBRUSH)SelectObject(hdc, pb);
-        Ellipse(hdc, ex - 1, ey - 1, ex + 1, ey + 1);
+        Ellipse(hdc, ex - Scale(1), ey - Scale(1), ex + Scale(1), ey + Scale(1));
         SelectObject(hdc, opb);
         DeleteObject(pb);
     }
@@ -286,10 +309,10 @@ static void DrawFeatureIcon(HDC hdc, RECT* r, const WCHAR* fid, COLORREF accent)
 static void DrawStatusBadge(HDC hdc, RECT* r, BOOL installed) {
     COLORREF bg = installed ? C_GREEN_BG : C_BADGE_NO_BG;
     COLORREF fg = installed ? C_GREEN_DARK : C_BADGE_NO_FG;
-    DrawRoundedRect(hdc, r, 11, bg, bg);
+    DrawRoundedRect(hdc, r, Scale(11), bg, bg);
     int cy = (r->top + r->bottom) / 2;
-    int dr = 3;
-    RECT dot = {r->left + 10, cy - dr, r->left + 10 + 2 * dr, cy + dr};
+    int dr = Scale(3);
+    RECT dot = {r->left + Scale(10), cy - dr, r->left + Scale(10) + 2 * dr, cy + dr};
     HBRUSH b = CreateSolidBrush(installed ? fg : bg);
     HPEN p = CreatePen(PS_SOLID, 1, fg);
     HPEN op = (HPEN)SelectObject(hdc, p);
@@ -301,9 +324,9 @@ static void DrawStatusBadge(HDC hdc, RECT* r, BOOL installed) {
     DeleteObject(b);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, fg);
-    HFONT f = MakeFont(11, FW_MEDIUM);
+    HFONT f = MakeFont(Scale(11), FW_MEDIUM);
     HFONT of = (HFONT)SelectObject(hdc, f);
-    RECT tR = {r->left + 22, r->top, r->right - 8, r->bottom};
+    RECT tR = {r->left + Scale(22), r->top, r->right - Scale(8), r->bottom};
     DrawTextW(hdc, installed ? L"\u5df2\u542f\u7528" : L"\u672a\u542f\u7528",
               -1, &tR, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     SelectObject(hdc, of);
@@ -314,17 +337,18 @@ static void DrawStatusBadge(HDC hdc, RECT* r, BOOL installed) {
 static void DrawTitleButton(HDC hdc, RECT* r, BOOL hover, BOOL close) {
     if (hover) {
         COLORREF fill = close ? C_TB_CLOSE_HOVER : C_TB_HOVER;
-        DrawRoundedRect(hdc, r, 6, fill, fill);
+        DrawRoundedRect(hdc, r, Scale(6), fill, fill);
     }
     int cx = (r->left + r->right) / 2, cy = (r->top + r->bottom) / 2;
     COLORREF c = hover ? (close ? RGB(255, 255, 255) : C_SUBTITLE) : C_SUBTITLE;
     HPEN p = CreatePen(PS_SOLID, 1, c);
     HPEN op = (HPEN)SelectObject(hdc, p);
+    int g = Scale(5);   // 字形半幅
     if (close) {
-        MoveToEx(hdc, cx - 5, cy - 5, NULL); LineTo(hdc, cx + 5, cy + 5);
-        MoveToEx(hdc, cx - 5, cy + 5, NULL); LineTo(hdc, cx + 5, cy - 5);
+        MoveToEx(hdc, cx - g, cy - g, NULL); LineTo(hdc, cx + g, cy + g);
+        MoveToEx(hdc, cx - g, cy + g, NULL); LineTo(hdc, cx + g, cy - g);
     } else {
-        MoveToEx(hdc, cx - 5, cy, NULL); LineTo(hdc, cx + 5, cy);
+        MoveToEx(hdc, cx - g, cy, NULL); LineTo(hdc, cx + g, cy);
     }
     SelectObject(hdc, op);
     DeleteObject(p);
@@ -336,21 +360,22 @@ static void DrawTitleButton(HDC hdc, RECT* r, BOOL hover, BOOL close) {
 static LRESULT CALLBACK NoticeProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_CREATE: {
-        int W = 380, P = 24, iconSz = 36, gap = 14;
+        int W = Scale(380), P = Scale(24), iconSz = Scale(36), gap = Scale(14);
         int bodyW = W - 2 * P;
         // 计算正文高度（自动换行）
         HDC hdc = GetDC(hWnd);
-        HFONT bf = MakeFont(13, FW_NORMAL);
+        HFONT bf = MakeFont(Scale(13), FW_NORMAL);
         HFONT of = (HFONT)SelectObject(hdc, bf);
         RECT r = {0, 0, bodyW, 0};
         DrawTextW(hdc, g_notice.body, -1, &r, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
         int bodyH = r.bottom - r.top;
         SelectObject(hdc, of); DeleteObject(bf); ReleaseDC(hWnd, hdc);
 
-        int btnW = 96, btnH = 34, btnGap = 18;
+        int btnW = Scale(96), btnH = Scale(34), btnGap = Scale(18);
         int H = P + iconSz + gap + bodyH + btnGap + btnH + P;
         g_notice.dlgW = W; g_notice.dlgH = H;
         SetWindowPos(hWnd, NULL, 0, 0, W, H, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        ApplyRoundedRegion(hWnd, W, H);
 
         // 确定按钮：右下角对齐
         g_notice.btnRect.left   = W - P - btnW;
@@ -379,11 +404,11 @@ static LRESULT CALLBACK NoticeProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 
     case WM_PAINT: {
         PAINTSTRUCT ps; HDC hdc = BeginPaint(hWnd, &ps);
-        int W = g_notice.dlgW, H = g_notice.dlgH, P = 24, iconSz = 36;
+        int W = g_notice.dlgW, H = g_notice.dlgH, P = Scale(24), iconSz = Scale(36);
 
         // 内容圆角白底 + 细边框（无外阴影，简洁）
         RECT fullR = {0, 0, W, H};
-        DrawRoundedRect(hdc, &fullR, 10, C_CARD_BG, C_WIN_BORDER);
+        DrawRoundedRect(hdc, &fullR, Scale(10), C_CARD_BG, C_WIN_BORDER);
 
         // 圆形图标（信息蓝 / 错误红）
         int ix = P, iy = P;
@@ -397,26 +422,26 @@ static LRESULT CALLBACK NoticeProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         DeleteObject(ip); DeleteObject(ib);
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, RGB(255, 255, 255));
-        HFONT sf = MakeFont(20, FW_BOLD);
+        HFONT sf = MakeFont(Scale(20), FW_BOLD);
         HFONT osf = (HFONT)SelectObject(hdc, sf);
         RECT sr = {ix, iy, ix + iconSz, iy + iconSz};
         DrawTextW(hdc, g_notice.error ? L"!" : L"i", -1, &sr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         SelectObject(hdc, osf); DeleteObject(sf);
 
         // 标题（图标右侧垂直居中）
-        HFONT cf = MakeFont(15, FW_SEMIBOLD);
+        HFONT cf = MakeFont(Scale(15), FW_SEMIBOLD);
         HFONT ocf = (HFONT)SelectObject(hdc, cf);
         SetTextColor(hdc, C_TITLE);
-        RECT cr = {ix + iconSz + 12, iy, W - P, iy + iconSz};
+        RECT cr = {ix + iconSz + Scale(12), iy, W - P, iy + iconSz};
         DrawTextW(hdc, g_notice.caption, -1, &cr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         SelectObject(hdc, ocf); DeleteObject(cf);
 
         // 正文（图标下自动换行）
-        int bodyTop = iy + iconSz + 14;
-        HFONT bf = MakeFont(13, FW_NORMAL);
+        int bodyTop = iy + iconSz + Scale(14);
+        HFONT bf = MakeFont(Scale(13), FW_NORMAL);
         HFONT obf = (HFONT)SelectObject(hdc, bf);
         SetTextColor(hdc, C_TEXT);
-        RECT br = {P, bodyTop, W - P, H - P - 34 - 18};
+        RECT br = {P, bodyTop, W - P, H - P - Scale(34) - Scale(18)};
         DrawTextW(hdc, g_notice.body, -1, &br, DT_LEFT | DT_WORDBREAK | DT_VCENTER);
         SelectObject(hdc, obf); DeleteObject(bf);
 
@@ -498,35 +523,72 @@ static void DrawWindowFrame(HDC hdc, int W, int H) {
 
 static void CenterWindow(HWND hWnd) {
     RECT s; GetWindowRect(GetDesktopWindow(), &s);
-    RECT w; GetWindowRect(hWnd, &w);
+    // 用缩放后的客户区尺寸居中（g_clientW/g_clientH 由 ComputeLayout 维护）
     SetWindowPos(hWnd, NULL,
-        (s.right - s.left - (w.right - w.left)) / 2,
-        (s.bottom - s.top - (w.bottom - w.top)) / 2,
+        (s.right - s.left - g_clientW) / 2,
+        (s.bottom - s.top - g_clientH) / 2,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 }
 
-// 布局
+// 动态取窗口 DPI：优先 GetDpiForWindow（user32，Win10 1607+），
+// 拿不到（旧系统 / MinGW 旧导入库缺符号）则回退主显示器 LOGPIXELSY。
+// 全程动态加载，绝不静态链接，确保 Win7/8 上能正常加载且不崩溃。
+typedef UINT (WINAPI *GetDpiForWindow_t)(HWND);
+static UINT GetWindowDpi(HWND hWnd) {
+    static GetDpiForWindow_t pGetDpi = NULL;
+    static BOOL resolved = FALSE;
+    if (!resolved) {
+        HMODULE u = GetModuleHandleW(L"user32.dll");
+        if (u) pGetDpi = (GetDpiForWindow_t)GetProcAddress(u, "GetDpiForWindow");
+        resolved = TRUE;
+    }
+    if (pGetDpi) return pGetDpi(hWnd);
+    HDC dc = GetDC(NULL);
+    int d = dc ? GetDeviceCaps(dc, LOGPIXELSY) : 96;
+    if (dc) ReleaseDC(NULL, dc);
+    return (UINT)(d ? d : 96);
+}
+
+// 按当前 DPI 重建窗口圆角 Region（外缘与自绘边框同心，保证圆角视觉一致）。
+// SetWindowRgn 接收后由系统接管 HRGN 生命周期，重复调用自动释放旧 Region，无句柄泄漏。
+static void ApplyRoundedRegion(HWND hWnd, int w, int h) {
+    int r = Scale(WIN_RADIUS + SHADOW_PAD);   // 外缘圆角半径（= 边框半径 + 留白）
+    HRGN hr = CreateRoundRectRgn(0, 0, w, h, r * 2, r * 2);
+    if (hr) SetWindowRgn(hWnd, hr, TRUE);
+}
+
+// 缩放策略：统一采用「先求和后 Scale」。每个坐标/尺寸都先把 96-DPI 基准常量求和，
+// 再整体 Scale 一次（避免 Scale(a)+Scale(b) 的逐项舍入差导致绘制与命中检测 1px 错位）。
+// 绘制与命中检测共用此处算出的 g_cardRect / g_btnRect / g_minBtnRect / g_closeBtnRect，
+// 因此二者必然一致。
 static void ComputeLayout() {
     g_count = (int)g_featureCount;
-    // 所有坐标均为“客户端坐标”：内容区整体内缩 SHADOW_PAD，
-    // 以便窗口四周留出阴影边距（与 WM_PAINT 的纯自绘投影一致，命中测试也用此坐标）。
+    int sp = Scale(SHADOW_PAD);
     for (int i = 0; i < g_count; i++) {
-        int y = TITLE_H + HEADER_H + CARD_GAP + i * (CARD_H + CARD_GAP);
-        g_cardRect[i] = {MARGIN + SHADOW_PAD, y + SHADOW_PAD,
-                         WIN_W - MARGIN + SHADOW_PAD, y + CARD_H + SHADOW_PAD};
-        // 按钮在卡片内垂直居中、靠右
-        int bw = 84, bh = 32;
-        int by = y + (CARD_H - bh) / 2;
-        g_btnRect[i] = {WIN_W - MARGIN - 18 - bw + SHADOW_PAD, by + SHADOW_PAD,
-                        WIN_W - MARGIN - 18 + SHADOW_PAD, by + bh + SHADOW_PAD};
+        // 卡片顶部 Y：先把基准偏移求和再 Scale
+        int yTop = Scale(TITLE_H + HEADER_H + CARD_GAP + i * (CARD_H + CARD_GAP));
+        int cardH = Scale(CARD_H);
+        g_cardRect[i] = {Scale(MARGIN + SHADOW_PAD), yTop + sp,
+                         Scale(WIN_W - MARGIN + SHADOW_PAD), yTop + cardH + sp};
+
+        // 按钮在卡片内垂直居中、靠右（尺寸也先求和后 Scale）
+        int bw = Scale(84), bh = Scale(32);
+        int byTop = yTop + (cardH - bh) / 2 + sp;
+        int btnRight = Scale(WIN_W - MARGIN - 18 + SHADOW_PAD);
+        g_btnRect[i] = {btnRight - bw, byTop, btnRight, byTop + bh};
         g_hover[i] = FALSE;
     }
-    g_totalH = TITLE_H + HEADER_H + CARD_GAP + g_count * (CARD_H + CARD_GAP) + FOOTER_H;
 
-    g_minBtnRect  = {WIN_W + SHADOW_PAD - 2 * TB_BTN_W, SHADOW_PAD,
-                     WIN_W + SHADOW_PAD - TB_BTN_W, TITLE_H + SHADOW_PAD};
-    g_closeBtnRect = {WIN_W + SHADOW_PAD - TB_BTN_W, SHADOW_PAD,
-                      WIN_W + SHADOW_PAD, TITLE_H + SHADOW_PAD};
+    // 内容总高与窗口客户区尺寸：均先求和基准值再整体 Scale 一次
+    int baseH = TITLE_H + HEADER_H + CARD_GAP + g_count * (CARD_H + CARD_GAP) + FOOTER_H;
+    g_totalH = Scale(baseH);
+    g_clientW = Scale(WIN_W + 2 * SHADOW_PAD);
+    g_clientH = Scale(baseH + 2 * SHADOW_PAD);
+
+    g_minBtnRect  = {Scale(WIN_W + SHADOW_PAD - 2 * TB_BTN_W), Scale(SHADOW_PAD),
+                     Scale(WIN_W + SHADOW_PAD - TB_BTN_W),      Scale(TITLE_H + SHADOW_PAD)};
+    g_closeBtnRect = {Scale(WIN_W + SHADOW_PAD - TB_BTN_W), Scale(SHADOW_PAD),
+                      Scale(WIN_W + SHADOW_PAD),               Scale(TITLE_H + SHADOW_PAD)};
 }
 
 // ============================================================
@@ -545,11 +607,14 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
 
         // 纯 WS_POPUP 无系统边框：客户区即窗口区。窗口尺寸在内容尺寸之外
         // 每边多留 SHADOW_PAD，用于纯自绘柔和投影（不再依赖 DWM 阴影）。
-        SetWindowPos(hWnd, NULL, 0, 0, WIN_W + 2 * SHADOW_PAD, g_totalH + 2 * SHADOW_PAD,
+        // 此处先用 96-DPI 基准尺寸占位；真正的 DPI 尺寸在 CreateWindow 返回后
+        // 由 wWinMain 取窗口实际 DPI 重算并 SetWindowPos。
+        SetWindowPos(hWnd, NULL, 0, 0, g_clientW, g_clientH,
                      SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        ApplyRoundedRegion(hWnd, g_clientW, g_clientH);
         CenterWindow(hWnd);
 
-        // Win11 DWM 圆角（Win10 上忽略失败）
+        // Win11 DWM 圆角（Win10 上忽略失败；与上面的 SetWindowRgn 互为冗余但无害）
         HMODULE hDwm = LoadLibraryW(L"dwmapi.dll");
         if (hDwm) {
             typedef HRESULT (WINAPI *DwmSetWindowAttribute_t)(HWND, DWORD, LPCVOID, DWORD);
@@ -576,15 +641,17 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
         // 窗口层：纯自绘柔和向下投影 + 内容区底色（先于内容绘制）
         DrawWindowFrame(hdc, W, H);
 
+        int sp = Scale(SHADOW_PAD);   // 本帧统一使用的留白像素
+
         // 背景（内容区，已内缩 SHADOW_PAD）
         HBRUSH bg = CreateSolidBrush(C_BG);
-        RECT cbody = {SHADOW_PAD, SHADOW_PAD, WIN_W + SHADOW_PAD, g_totalH + SHADOW_PAD};
+        RECT cbody = {sp, sp, Scale(WIN_W + SHADOW_PAD), g_totalH + sp};
         FillRect(hdc, &cbody, bg);
         DeleteObject(bg);
 
         // ====== 自定义标题栏 ======
         {
-            RECT tb = {SHADOW_PAD, SHADOW_PAD, WIN_W + SHADOW_PAD, TITLE_H + SHADOW_PAD};
+            RECT tb = {sp, sp, Scale(WIN_W + SHADOW_PAD), Scale(TITLE_H + SHADOW_PAD)};
             HBRUSH tbb = CreateSolidBrush(C_TB_BG);
             FillRect(hdc, &tb, tbb);
             DeleteObject(tbb);
@@ -594,29 +661,30 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
             DrawTitleButton(hdc, &g_closeBtnRect, g_closeHover, TRUE);
 
             // 底部分隔线（极细，衔接标题栏与内容）
-            HPEN sp = CreatePen(PS_SOLID, 1, C_DIVIDER);
-            HPEN osp = (HPEN)SelectObject(hdc, sp);
-            MoveToEx(hdc, SHADOW_PAD, TITLE_H + SHADOW_PAD, NULL);
-            LineTo(hdc, WIN_W + SHADOW_PAD, TITLE_H + SHADOW_PAD);
+            HPEN spn = CreatePen(PS_SOLID, 1, C_DIVIDER);
+            HPEN osp = (HPEN)SelectObject(hdc, spn);
+            MoveToEx(hdc, sp, Scale(TITLE_H + SHADOW_PAD), NULL);
+            LineTo(hdc, Scale(WIN_W + SHADOW_PAD), Scale(TITLE_H + SHADOW_PAD));
             SelectObject(hdc, osp);
-            DeleteObject(sp);
+            DeleteObject(spn);
 
             // 左侧真实应用图标（失败则回退为品牌色方块）
-            int iSz = 22;
-            int ix = 16 + SHADOW_PAD, iy = SHADOW_PAD + (TITLE_H - iSz) / 2;
+            int iSz = Scale(22);
+            int ix = Scale(16) + sp, iy = sp + (Scale(TITLE_H) - iSz) / 2;
             if (g_hAppIcon) {
                 DrawIconEx(hdc, ix, iy, g_hAppIcon, iSz, iSz, 0, NULL, DI_NORMAL);
             } else {
                 RECT ir = {ix, iy, ix + iSz, iy + iSz};
-                DrawRoundedRect(hdc, &ir, 5, C_PRIMARY, C_PRIMARY);
+                DrawRoundedRect(hdc, &ir, Scale(5), C_PRIMARY, C_PRIMARY);
             }
 
             // 标题文字（与图标同高，垂直居中）
-            HFONT tf = MakeFont(14, FW_SEMIBOLD);
+            HFONT tf = MakeFont(Scale(14), FW_SEMIBOLD);
             HFONT of = (HFONT)SelectObject(hdc, tf);
             SetTextColor(hdc, C_TITLE);
             SetBkMode(hdc, TRANSPARENT);
-            RECT tR = {ix + iSz + 10, SHADOW_PAD, WIN_W + SHADOW_PAD - 2 * TB_BTN_W, TITLE_H + SHADOW_PAD};
+            RECT tR = {ix + iSz + Scale(10), sp,
+                       Scale(WIN_W + SHADOW_PAD - 2 * TB_BTN_W), Scale(TITLE_H + SHADOW_PAD)};
             DrawTextW(hdc, L"RightMenuX", -1, &tR,
                       DT_LEFT | DT_SINGLELINE | DT_VCENTER);
             SelectObject(hdc, of);
@@ -627,33 +695,35 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
 
         // ====== 导语区（替代重复大标题，提供信息层次） ======
         {
-            int heroY = TITLE_H + 20 + SHADOW_PAD;
-            HFONT heroF = MakeFont(16, FW_SEMIBOLD);
+            int heroY = Scale(TITLE_H + 20 + SHADOW_PAD);
+            HFONT heroF = MakeFont(Scale(16), FW_SEMIBOLD);
             HFONT of = (HFONT)SelectObject(hdc, heroF);
             SetTextColor(hdc, C_TITLE);
             SetBkMode(hdc, TRANSPARENT);
-            RECT hR = {MARGIN + SHADOW_PAD, heroY, WIN_W - MARGIN + SHADOW_PAD, heroY + 26};
+            RECT hR = {Scale(MARGIN + SHADOW_PAD), heroY,
+                       Scale(WIN_W - MARGIN + SHADOW_PAD), heroY + Scale(26)};
             DrawTextW(hdc, L"\u53f3\u952e\u83dc\u5355\u589e\u5f3a\u5de5\u5177", -1, &hR,
                       DT_LEFT | DT_SINGLELINE | DT_VCENTER);
             SelectObject(hdc, of);
             DeleteObject(heroF);
 
             // 品牌色短装饰线
-            HPEN ap = CreatePen(PS_SOLID, 3, C_PRIMARY);
+            HPEN ap = CreatePen(PS_SOLID, Scale(3), C_PRIMARY);
             HPEN aop = (HPEN)SelectObject(hdc, ap);
-            int lineY = TITLE_H + 20 + 26 + SHADOW_PAD;
-            MoveToEx(hdc, MARGIN + SHADOW_PAD, lineY, NULL);
-            LineTo(hdc, MARGIN + 28 + SHADOW_PAD, lineY);
+            int lineY = Scale(TITLE_H + 20 + 26 + SHADOW_PAD);
+            MoveToEx(hdc, Scale(MARGIN + SHADOW_PAD), lineY, NULL);
+            LineTo(hdc, Scale(MARGIN + 28 + SHADOW_PAD), lineY);
             SelectObject(hdc, aop);
             DeleteObject(ap);
 
             // OS 信息副标题
-            int subY = TITLE_H + 50 + SHADOW_PAD;
-            HFONT subF = MakeFont(13, FW_NORMAL);
+            int subY = Scale(TITLE_H + 50 + SHADOW_PAD);
+            HFONT subF = MakeFont(Scale(13), FW_NORMAL);
             HFONT osf = (HFONT)SelectObject(hdc, subF);
             SetTextColor(hdc, C_SUBTITLE);
             SetBkMode(hdc, TRANSPARENT);
-            RECT sR = {MARGIN + SHADOW_PAD, subY, WIN_W - MARGIN + SHADOW_PAD, subY + 22};
+            RECT sR = {Scale(MARGIN + SHADOW_PAD), subY,
+                       Scale(WIN_W - MARGIN + SHADOW_PAD), subY + Scale(22)};
             DrawTextW(hdc, g_osString, -1, &sR, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
             SelectObject(hdc, osf);
             DeleteObject(subF);
@@ -663,9 +733,9 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
         {
             HPEN line = CreatePen(PS_SOLID, 1, C_DIVIDER);
             HPEN ol = (HPEN)SelectObject(hdc, line);
-            int divY = TITLE_H + HEADER_H - 16 + SHADOW_PAD;
-            MoveToEx(hdc, MARGIN + SHADOW_PAD, divY, NULL);
-            LineTo(hdc, WIN_W - MARGIN + SHADOW_PAD, divY);
+            int divY = Scale(TITLE_H + HEADER_H - 16 + SHADOW_PAD);
+            MoveToEx(hdc, Scale(MARGIN + SHADOW_PAD), divY, NULL);
+            LineTo(hdc, Scale(WIN_W - MARGIN + SHADOW_PAD), divY);
             SelectObject(hdc, ol);
             DeleteObject(line);
         }
@@ -679,25 +749,26 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
             DrawCard(hdc, &g_cardRect[i], g_hover[i], accent);
 
             // 图标瓦片（彩色圆角方块 + 白色线稿）
-            int iconSz = 46;
-            RECT ir = {g_cardRect[i].left + 18,
-                       g_cardRect[i].top + (CARD_H - iconSz) / 2,
-                       g_cardRect[i].left + 18 + iconSz,
-                       g_cardRect[i].top + (CARD_H - iconSz) / 2 + iconSz};
-            DrawRoundedRect(hdc, &ir, 11, accent, accent);
+            int iconSz = Scale(46);
+            int cardH = g_cardRect[i].bottom - g_cardRect[i].top;
+            int iyTop = g_cardRect[i].top + (cardH - iconSz) / 2;
+            int ixL  = g_cardRect[i].left + Scale(18);
+            RECT ir = {ixL, iyTop, ixL + iconSz, iyTop + iconSz};
+            DrawRoundedRect(hdc, &ir, Scale(11), accent, accent);
             DrawFeatureIcon(hdc, &ir, f->id, accent);
 
             // 文字起始 X
-            int tx = g_cardRect[i].left + 18 + iconSz + 16;
+            int tx = g_cardRect[i].left + Scale(18) + iconSz + Scale(16);
 
             // 功能名称
             {
-                HFONT nameF = MakeFont(16, FW_SEMIBOLD);
+                HFONT nameF = MakeFont(Scale(16), FW_SEMIBOLD);
                 HFONT of = (HFONT)SelectObject(hdc, nameF);
                 SetTextColor(hdc, C_TEXT);
                 SetBkMode(hdc, TRANSPARENT);
-                RECT nR = {tx, g_cardRect[i].top + 18, g_btnRect[i].left - 14,
-                           g_cardRect[i].top + 18 + 24};
+                RECT nR = {tx, g_cardRect[i].top + Scale(18),
+                           g_btnRect[i].left - Scale(14),
+                           g_cardRect[i].top + Scale(18) + Scale(24)};
                 DrawTextW(hdc, f->displayName, -1, &nR,
                           DT_LEFT | DT_SINGLELINE | DT_VCENTER);
                 SelectObject(hdc, of);
@@ -706,12 +777,13 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
 
             // 说明文字（两行完整显示，超长才省略，不再单行截断）
             {
-                HFONT descF = MakeFont(15, FW_NORMAL);
+                HFONT descF = MakeFont(Scale(15), FW_NORMAL);
                 HFONT of = (HFONT)SelectObject(hdc, descF);
                 SetTextColor(hdc, C_DESC);
                 SetBkMode(hdc, TRANSPARENT);
-                RECT dR = {tx, g_cardRect[i].top + 42, g_btnRect[i].left - 14,
-                           g_cardRect[i].top + 42 + 40};
+                RECT dR = {tx, g_cardRect[i].top + Scale(42),
+                           g_btnRect[i].left - Scale(14),
+                           g_cardRect[i].top + Scale(42) + Scale(40)};
                 DrawTextW(hdc, f->description, -1, &dR,
                           DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_VCENTER);
                 SelectObject(hdc, of);
@@ -720,8 +792,9 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
 
             // 状态徽章（带指示圆点，卡片底部一行）
             {
-                int bW = 76, bH = 22;
-                RECT stR = {tx, g_cardRect[i].top + 88, tx + bW, g_cardRect[i].top + 88 + bH};
+                int bW = Scale(76), bH = Scale(22);
+                RECT stR = {tx, g_cardRect[i].top + Scale(88),
+                            tx + bW, g_cardRect[i].top + Scale(88) + bH};
                 DrawStatusBadge(hdc, &stR, installed);
             }
 
@@ -733,15 +806,16 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
 
         // ====== 页脚（两行：提示略大 + 版权信息） ======
         {
-            int zoneTop = g_totalH - FOOTER_H + SHADOW_PAD;
-            int zoneH = FOOTER_H;
+            int zoneTop = g_totalH - Scale(FOOTER_H) + sp;
+            int zoneH = Scale(FOOTER_H);
             int cyMid = zoneTop + zoneH / 2;
             // 提示行（字号略增：11 -> 13）
-            HFONT footF = MakeFont(14, FW_NORMAL);
+            HFONT footF = MakeFont(Scale(14), FW_NORMAL);
             HFONT of = (HFONT)SelectObject(hdc, footF);
             SetTextColor(hdc, C_SUBTITLE);
             SetBkMode(hdc, TRANSPARENT);
-            RECT l1 = {MARGIN + SHADOW_PAD, cyMid - 18, WIN_W - MARGIN + SHADOW_PAD, cyMid};
+            RECT l1 = {Scale(MARGIN + SHADOW_PAD), cyMid - Scale(18),
+                       Scale(WIN_W - MARGIN + SHADOW_PAD), cyMid};
             DrawTextW(hdc,
                 L"\u53f3\u952e\u83dc\u5355\u9879\u542f\u7528\u540e\u5373\u65f6\u751f\u6548\uff0c\u65e0\u9700\u91cd\u542f",
                 -1, &l1, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
@@ -749,11 +823,12 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
             DeleteObject(footF);
 
             // 版权信息行（与 app.rc 的 CompanyName / LegalCopyright 保持一致）
-            HFONT copyF = MakeFont(13, FW_NORMAL);
+            HFONT copyF = MakeFont(Scale(13), FW_NORMAL);
             HFONT of2 = (HFONT)SelectObject(hdc, copyF);
             SetTextColor(hdc, C_SUBTITLE);
             SetBkMode(hdc, TRANSPARENT);
-            RECT l2 = {MARGIN + SHADOW_PAD, cyMid + 1, WIN_W - MARGIN + SHADOW_PAD, cyMid + 19};
+            RECT l2 = {Scale(MARGIN + SHADOW_PAD), cyMid + Scale(1),
+                       Scale(WIN_W - MARGIN + SHADOW_PAD), cyMid + Scale(19)};
             WCHAR verBuf[64] = {0};
             LoadStringW(g_hInst, IDS_VERSION, verBuf, _countof(verBuf));
             WCHAR copyLine[128];
@@ -768,8 +843,8 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
 
         // 窗口 1px 清晰圆角外边框（最后描边，压在内容之上，不被底色覆盖）
         {
-            RECT wf = {SHADOW_PAD, SHADOW_PAD, W - SHADOW_PAD, H - SHADOW_PAD};
-            StrokeRoundedRect(hdc, &wf, WIN_RADIUS, C_WIN_BORDER, 1);
+            RECT wf = {sp, sp, W - sp, H - sp};
+            StrokeRoundedRect(hdc, &wf, Scale(WIN_RADIUS), C_WIN_BORDER, 1);
         }
 
         EndPaint(hWnd, &ps);
@@ -785,7 +860,8 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
 
         // 固定尺寸工具窗口，禁止任何缩放。
         // 仅标题栏非按钮区域返回 HTCAPTION 用于拖拽，其余一律 HTCLIENT。
-        if (pt.y < TITLE_H + SHADOW_PAD) {
+        // 阈值与 g_minBtnRect/g_closeBtnRect 的底边一致（均为 Scale(TITLE_H + SHADOW_PAD)）。
+        if (pt.y < Scale(TITLE_H + SHADOW_PAD)) {
             if (PtInRect(&g_closeBtnRect, pt) || PtInRect(&g_minBtnRect, pt))
                 return HTCLIENT;
             return HTCAPTION;
@@ -887,6 +963,21 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
         if (wParam == VK_ESCAPE) DestroyWindow(hWnd);
         return 0;
 
+    // Per-Monitor V2：窗口跨监视器移动 / 系统缩放变更时收到。
+    // wParam 高位 = 新 DPI；lParam = 建议窗口矩形（已按新 DPI 排好位置）。
+    case WM_DPICHANGED: {
+        g_dpi = (UINT)HIWORD(wParam);
+        ComputeLayout();                       // 用新 DPI 重算所有坐标/尺寸
+        RECT* pr = (RECT*)lParam;
+        // 用建议矩形定位 + 我们计算的缩放尺寸（二者一致），并重建圆角 Region。
+        // 字体为每次绘制临时创建（无全局 HFONT 缓存），无需重建，无句柄泄漏。
+        SetWindowPos(hWnd, NULL, pr->left, pr->top, g_clientW, g_clientH,
+                     SWP_NOZORDER | SWP_FRAMECHANGED);
+        ApplyRoundedRegion(hWnd, g_clientW, g_clientH);
+        InvalidateRect(hWnd, NULL, TRUE);     // 全窗重绘
+        return 0;
+    }
+
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
@@ -944,12 +1035,29 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmd
 
     // 纯 WS_POPUP：彻底无系统尺寸边框、无白边、无缩放。
     // 阴影与 1px 边框全部由 WM_PAINT 纯自绘（见 DrawWindowFrame）。
+    // 初始尺寸用 96-DPI 基准占位；创建后立即按窗口实际 DPI 重算（见下方）。
     HWND hWnd = CreateWindowExW(0, L"RightMenuXDialog",
         L"RightMenuX",
         WS_POPUP | WS_VISIBLE,
         CW_USEDEFAULT, CW_USEDEFAULT, WIN_W + 2 * SHADOW_PAD, 400,
         NULL, NULL, hInstance, NULL);
     if (!hWnd) return 1;
+
+    // Per-Monitor V2：CreateWindow 后窗口已在目标监视器上，此刻取真实 DPI。
+    // 若与初始 96 不同（如 125%/150% 主屏），按新 DPI 重算布局并重设尺寸 +
+    // 重建圆角 Region + 重新居中；字体为绘制时临时创建，无需重建。
+    {
+        UINT realDpi = GetWindowDpi(hWnd);
+        if (realDpi != g_dpi) {
+            g_dpi = realDpi;
+            ComputeLayout();
+            SetWindowPos(hWnd, NULL, 0, 0, g_clientW, g_clientH,
+                         SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            ApplyRoundedRegion(hWnd, g_clientW, g_clientH);
+            CenterWindow(hWnd);
+            InvalidateRect(hWnd, NULL, TRUE);
+        }
+    }
 
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);

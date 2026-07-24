@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1"
+          xmlns:asmv3="urn:schemas-microsoft-com:asm.v3"
+          manifestVersion="1.0">
   <assemblyIdentity
     type="win32"
     name="RightMenuX.RightMenuX"
@@ -7,6 +9,15 @@
     processorArchitecture="*"/>
 
   <description>RightMenuX - 右键菜单增强工具</description>
+
+  <!-- Per-Monitor V2 DPI 自适应：true/pm 兼容 Win7/8（系统 DPI 虚拟化），
+       PerMonitorV2 在 Win10 1607+ 启用逐监视器 DPI 感知并自动处理非客户区/字体。 -->
+  <asmv3:application xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
+    <asmv3:windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </asmv3:windowsSettings>
+  </asmv3:application>
 
   <dependency>
     <dependentAssembly>
