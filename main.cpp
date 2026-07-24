@@ -758,7 +758,9 @@ static LRESULT CALLBACK DialogProc(HWND hWnd, UINT uMsg,
             LoadStringW(g_hInst, IDS_VERSION, verBuf, _countof(verBuf));
             WCHAR copyLine[128];
             swprintf(copyLine, _countof(copyLine),
-                L"\u00a9 \u91cd\u5e86\u6301\u739b\u591a\u7f51\u7edc\u79d1\u6280\u6709\u9650\u516c\u53f8 \u00b7 Z.W.  v%s", verBuf);
+                // 注意：宽字符 printf 中必须用 %ls。MinGW 按 C99 语义把 %s 当窄字符串，
+                // 宽串 L"1.0.2..." 的首字符高位 0x00 被误判为结尾 → 界面只显示 "v1"。
+                L"\u00a9 \u91cd\u5e86\u6301\u739b\u591a\u7f51\u7edc\u79d1\u6280\u6709\u9650\u516c\u53f8 \u00b7 Z.W.  v%ls", verBuf);
             DrawTextW(hdc, copyLine, -1, &l2, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
             SelectObject(hdc, of2);
             DeleteObject(copyF);
