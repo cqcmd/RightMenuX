@@ -1,6 +1,12 @@
 # RightMenuX
 
+[![Release](https://img.shields.io/github/v/release/cqcmd/RightMenuX?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC&color=2563EB)](https://github.com/cqcmd/RightMenuX/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/cqcmd/RightMenuX/total?label=%E4%B8%8B%E8%BD%BD%E9%87%8F&color=16A34A)](https://github.com/cqcmd/RightMenuX/releases)
+[![Platform](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Win10%20%2F%2011%20%2F%20Server-0078D7)](https://github.com/cqcmd/RightMenuX/releases/latest)
+
 Windows 右键菜单增强工具，纯 C++ / Win32 GDI 自绘，单 exe 双击即跑，无运行时依赖。
+
+**📦 [下载最新版 RightMenuX_v1.0.2.zip](https://github.com/cqcmd/RightMenuX/releases/download/v1.0.2/RightMenuX_v1.0.2.zip)**（解压后以管理员身份运行）
 
 当前版本：**v1.0.2.20260724**（v5.1.5）
 
