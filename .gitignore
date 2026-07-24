@@ -4,4 +4,6 @@ build_main.exe
 RightMenuXShell.dll
 selftest_report.txt
 
-# 保留：RightMenuX.exe（发布二进制）、version.ini（构建计数）、全部源码与文档
+# 不跟踪 exe，二进制走 Release
+RightMenuX.exe
+# 保留：version.ini（构建计数）、全部源码与文档
